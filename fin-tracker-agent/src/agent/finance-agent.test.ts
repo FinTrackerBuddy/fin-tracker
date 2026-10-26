@@ -1,0 +1,736 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+
+import type { ToolCapableLlm } from "../llm/llm-service.js";
+import { createGetExpensesTool } from "../tools/get-expenses.js";
+import { createCompareSpendingPeriodsTool } from "../tools/compare-spending-periods.js";
+import { createAnalyzeExpensesTool } from "../tools/analyze-expenses.js";
+import { FinanceAgent } from "./finance-agent.js";
+import type { FinanceMcpClient } from "../mcp/finance-mcp-client.js";
+import type { ApplicationLogger, LogDetails, LogScope } from "../logging/application-logger.js";
+
+const expenseCategoryVocabulary = {
+  async listCategories(): Promise<readonly string[]> {
+    return ["Dining out", "Food order", "Groceries", "Travel"];
+  },
+};
+
+const legacyCategoryVocabulary = {
+  async listCategories(): Promise<readonly string[]> {
+    return ["Food"];
+  },
+};
+
+class RecordedLogger implements ApplicationLogger {
+  public readonly entries: string[] = [];
+
+  public info(scope: LogScope, message: string, details?: LogDetails): void {
+    this.entries.push(`${scope}:${message}:${JSON.stringify(details ?? {})}`);
+  }
+
+  public error(scope: LogScope, message: string, details?: LogDetails): void {
+    this.entries.push(`${scope}:${message}:${JSON.stringify(details ?? {})}`);
+  }
+}
+
+test("uses the Finance MCP client for default expense tools and category vocabulary", async () => {
+  const calls: string[] = [];
+  const mcpClient: FinanceMcpClient = {
+    async listCategories() { return ["Food"]; },
+    async callTool(name, input) {
+      calls.push(name);
+      assert.deepEqual(input, { categories: ["Food"] });
+      return { expenses: [], total: 0 };
+    },
+  };
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      if (messages.some((message) => message instanceof ToolMessage)) return new AIMessage("No food expenses found.");
+      return new AIMessage({ content: "", tool_calls: [{ id: "mcp-expenses", name: "getExpenses", args: { categories: ["Food"] } }] });
+    },
+  }, undefined, undefined, undefined, undefined, undefined, undefined, mcpClient);
+
+  assert.deepEqual(await agent.respond("How much did I spend on food?"), { text: "No food expenses found." });
+  assert.deepEqual(calls, ["get_expenses"]);
+});
+
+test("returns a stable user-facing response without a tool call", async () => {
+  const providerAgnosticLlm: Pick<ToolCapableLlm, "sendMessagesWithTools"> = {
+    async sendMessagesWithTools(): Promise<AIMessage> {
+      return new AIMessage("I can help with expense questions.");
+    },
+  };
+  const agent = new FinanceAgent(providerAgnosticLlm, undefined, undefined, expenseCategoryVocabulary);
+
+  assert.deepEqual(await agent.respond("What can you help me with?"), {
+    text: "I can help with expense questions.",
+  });
+});
+
+test("loads prompt instructions from the finance-agent skill without sending its metadata to the model", async () => {
+  const calls: BaseMessage[][] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      return new AIMessage("Done.");
+    },
+  }, undefined, undefined, expenseCategoryVocabulary);
+
+  await agent.respond("What can you help me with?");
+
+  const systemPrompt = calls[0]?.[0]?.content.toString() ?? "";
+  assert.match(systemPrompt, /When the user asks for this\/current month/);
+  assert.match(systemPrompt, /include its monetary amount in currency/);
+  assert.doesNotMatch(systemPrompt, /name: finance-agent/);
+  assert.doesNotMatch(systemPrompt, /description: Deterministic expense-analysis/);
+});
+
+test("logs a redacted LLM failure diagnostic", async () => {
+  const logger = new RecordedLogger();
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(): Promise<AIMessage> {
+      throw new Error("Model request failed: api_key=sk-secret-value");
+    },
+  }, undefined, undefined, expenseCategoryVocabulary, logger);
+
+  await assert.rejects(agent.respond("How much did I spend?", "llm-failure-id"));
+
+  const failureLog = logger.entries.find((entry) => entry.includes("LLM invocation failed"));
+  assert.match(failureLog ?? "", /Model request failed/);
+  assert.doesNotMatch(failureLog ?? "", /sk-secret-value/);
+  assert.match(failureLog ?? "", /api_key=\[REDACTED\]/);
+});
+
+test("logs the user query as debugQuery during each LLM invocation", async () => {
+  const logger = new RecordedLogger();
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(): Promise<AIMessage> { return new AIMessage("Done."); },
+  }, undefined, undefined, expenseCategoryVocabulary, logger);
+
+  await agent.respond("How much did I spend in August?", "debug-query-id");
+
+  assert.match(logger.entries.join("\n"), /LLM:Invoking model:.*debugQuery.*How much did I spend in August/);
+});
+
+test("uses one summary-backed analysis call for an excluded-category monthly average", async () => {
+  const calls: BaseMessage[][] = [];
+  let summaryReads = 0;
+  const categories = {
+    async listCategories(): Promise<readonly string[]> {
+      return ["Home loan", "Income Tax", "Investments", "Transfer sent", "Groceries"];
+    },
+  };
+  const summarySource = {
+    monthTabs: ["April", "May", "June", "July", "August", "September"],
+    async listExpenses() { throw new Error("ledger should not be read"); },
+    async listDebitSummary() {
+      summaryReads += 1;
+      return [
+        { category: "Groceries", month: "April", amount: 100 },
+        { category: "Home loan", month: "April", amount: 900 },
+        { category: "Groceries", month: "May", amount: 200 },
+        { category: "Investments", month: "May", amount: 800 },
+        { category: "Groceries", month: "June", amount: 300 },
+        { category: "Income Tax", month: "June", amount: 700 },
+        { category: "Groceries", month: "July", amount: 400 },
+        { category: "Transfer sent", month: "July", amount: 600 },
+        { category: "Groceries", month: "August", amount: 500 },
+        { category: "Groceries", month: "September", amount: 600 },
+      ];
+    },
+  };
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages as BaseMessage[]);
+      if (calls.length === 1) {
+        return new AIMessage({ content: "", tool_calls: [{
+          id: "monthly-average", name: "analyzeExpenses", args: {
+            filter: {
+              months: ["April", "May", "June", "July", "August", "September"],
+              excludeCategories: ["home LOAN", "transfer SENT", "investments", "income tax"],
+            },
+            groupBy: "month", aggregation: "sum", averageMonthly: true,
+          },
+        }] });
+      }
+      return new AIMessage("Your average monthly expense is ₹350.");
+    },
+  }, undefined, { now: () => new Date("2026-09-27T12:00:00.000Z") }, categories, undefined, undefined,
+  createAnalyzeExpensesTool(summarySource));
+
+  assert.deepEqual(await agent.respond("What is my average overall monthly expense (based on number of months already passed) - exclude home loan, transfer sent, investments, income tax"), {
+    text: "Your average monthly expense is ₹350.",
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(summaryReads, 1);
+  const toolMessage = calls[1]?.find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()).averageMonthly, { total: 2100, monthCount: 6, average: 350 });
+});
+
+test("supplies bounded session history before the current follow-up", async () => {
+  const calls: BaseMessage[][] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      return new AIMessage("The same category was ₹750 in September.");
+    },
+  }, undefined, undefined, expenseCategoryVocabulary);
+
+  await agent.respond("How much was it in September?", "query-id", [{
+    query: "How much did I spend on groceries in August?",
+    response: "You spent ₹500 on groceries in August.",
+  }]);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.length, 4);
+  assert.equal(calls[0]?.[1]?.content.toString(), "How much did I spend on groceries in August?");
+  assert.equal(calls[0]?.[2]?.content.toString(), "You spent ₹500 on groceries in August.");
+  assert.equal(calls[0]?.[3]?.content.toString(), "How much was it in September?");
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /Do not append invitations to explore more categories/);
+});
+
+test("executes getExpenses and uses its result to produce the final response", async () => {
+  const calls: BaseMessage[][] = [];
+  const toolsProvided: StructuredToolInterface[][] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages, tools): Promise<AIMessage> {
+      const conversation = messages as BaseMessage[];
+      calls.push(conversation);
+      toolsProvided.push(tools);
+
+      if (calls.length === 1) {
+        return new AIMessage({
+          content: "",
+          tool_calls: [
+            {
+              id: "get-expenses-1",
+              name: "getExpenses",
+              args: { category: "Food" },
+            },
+          ],
+        });
+      }
+
+      return new AIMessage("You spent 450 on food.");
+    },
+  }, createGetExpensesTool({
+    monthTabs: ["April"],
+    async listExpenses() {
+      return [{
+        date: "2026-04-01", category: "Food", description: "Groceries", amount: 450,
+        sourceSheet: "April", sourceRow: 9,
+      }];
+    },
+  }), undefined, legacyCategoryVocabulary);
+
+  const response = await agent.respond("How much did I spend on food?");
+
+  assert.deepEqual(response, {
+    text: "You spent 450 on food.",
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(toolsProvided[0][0]?.name, "getExpenses");
+
+  const toolMessage = calls[1].find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()), {
+    expenses: [
+      { date: "2026-04-01", category: "Food", description: "Groceries", amount: 450 },
+    ],
+    total: 450,
+  });
+});
+
+test("uses analyzeExpenses grouped by month for a natural-language monthly trend request", async () => {
+  const calls: BaseMessage[][] = [];
+  const logger = new RecordedLogger();
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({
+          content: "",
+          tool_calls: [{ id: "trend-1", name: "analyzeExpenses", args: {
+            groupBy: "month", aggregation: "sum", sort: { field: "total", direction: "asc" },
+          } }],
+        });
+      }
+      return new AIMessage("Your monthly spending rose from April to May.");
+    },
+  }, createGetExpensesTool({
+    monthTabs: ["April", "May"],
+    async listExpenses() {
+      return [];
+    },
+  }), undefined, legacyCategoryVocabulary, logger, undefined, createAnalyzeExpensesTool({
+    monthTabs: ["April", "May"],
+    async listExpenses() {
+      return [
+        { date: "2026-04-01", category: "Food", description: "Market", amount: 100, sourceSheet: "April", sourceRow: 9 },
+        { date: "2026-05-01", category: "Food", description: "Market", amount: 200, sourceSheet: "May", sourceRow: 9 },
+      ];
+    },
+  }));
+
+  assert.deepEqual(await agent.respond("Show my monthly spending trend."), {
+    text: "Your monthly spending rose from April to May.",
+  });
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /monthly progression/);
+  const toolMessage = calls[1]?.find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()), {
+    groupBy: "month", aggregation: "sum",
+    results: [{ key: "April", total: 100 }, { key: "May", total: 200 }], matchingExpenseCount: 2,
+  });
+  assert.match(logger.entries.join("\n"), /Tool:Tool call requested:.*"analyzeExpenses"/);
+  assert.match(logger.entries.join("\n"), /Tool:Tool execution completed:.*"analysisResultCount":2.*"durationMs":\d+/);
+  assert.doesNotMatch(logger.entries.join("\n"), /Market/);
+});
+
+test("uses compareSpendingPeriods for last month versus this month in calendar order", async () => {
+  const calls: BaseMessage[][] = [];
+  const logger = new RecordedLogger();
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({
+          content: "",
+          tool_calls: [{
+            id: "comparison-1",
+            name: "compareSpendingPeriods",
+            args: {
+              periods: [
+                { label: "August", months: ["August"] },
+                { label: "September", months: ["September"] },
+              ],
+            },
+          }],
+        });
+      }
+      return new AIMessage("You spent 50 more in September than August.");
+    },
+  }, createGetExpensesTool({
+    monthTabs: ["August", "September"],
+    async listExpenses() {
+      return [];
+    },
+  }), {
+    now: () => new Date("2026-09-17T12:00:00.000Z"),
+  }, legacyCategoryVocabulary, logger, createCompareSpendingPeriodsTool({
+    monthTabs: ["August", "September"],
+    async listExpenses() {
+      return [
+        { date: "2026-08-01", category: "Food", description: "August item", amount: 100, sourceSheet: "August", sourceRow: 9 },
+        { date: "2026-09-01", category: "Food", description: "September item", amount: 150, sourceSheet: "September", sourceRow: 9 },
+      ];
+    },
+  }));
+
+  assert.deepEqual(await agent.respond("Compare last month with this month."), {
+    text: "You spent 50 more in September than August.",
+  });
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /Previous workbook month tab: August/);
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /Current workbook month tab: September/);
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /Use compareSpendingPeriods/);
+  const toolMessage = calls[1]?.find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()).comparisons, [
+    { from: "August", to: "September", difference: 50, percentageChange: 50 },
+  ]);
+  assert.match(logger.entries.join("\n"), /Tool:Tool call requested:.*compareSpendingPeriods.*queryId/);
+  assert.match(logger.entries.join("\n"), /August:\[August\].*September:\[September\]/);
+  assert.match(logger.entries.join("\n"), /Tool:Tool execution completed:.*"periodCount":2.*"comparisonCount":1.*"total":"₹250".*"durationMs":\d+/);
+  assert.doesNotMatch(logger.entries.join("\n"), /August item|September item/);
+});
+
+test("uses one category-filtered comparison call for last-two-month outside-food analysis", async () => {
+  const calls: BaseMessage[][] = [];
+  const comparisonInvocations: unknown[] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({
+          content: "",
+          tool_calls: [{
+            id: "outside-food-1",
+            name: "compareSpendingPeriods",
+            args: {
+              categories: [" dining OUT ", "food order"],
+              periods: [
+                { label: "July", months: ["July"] },
+                { label: "August", months: ["August"] },
+              ],
+            },
+          }],
+        });
+      }
+      return new AIMessage("Outside food was ₹300 in July and ₹500 in August, up ₹200 (66.67%).");
+    },
+  }, {
+    name: "getExpenses",
+    async invoke() {
+      throw new Error("getExpenses must not be called for category-period analysis");
+    },
+  } as unknown as StructuredToolInterface, {
+    now: () => new Date("2026-09-17T12:00:00.000Z"),
+  }, expenseCategoryVocabulary, undefined, {
+    name: "compareSpendingPeriods",
+    async invoke(input: unknown) {
+      comparisonInvocations.push(input);
+      return {
+        categories: ["Dining out", "Food order"],
+        total: 800,
+        periods: [
+          { label: "July", months: ["July"], total: 300 },
+          { label: "August", months: ["August"], total: 500 },
+        ],
+        comparisons: [{ from: "July", to: "August", difference: 200, percentageChange: 200 / 3 }],
+      };
+    },
+  } as unknown as StructuredToolInterface);
+
+  const response = await agent.respond("What is my spending analysis in last 2 months in outside food?");
+
+  assert.match(response.text, /Outside food/);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(comparisonInvocations, [{
+    categories: ["Dining out", "Food order"],
+    periods: [
+      { label: "July", months: ["July"] },
+      { label: "August", months: ["August"] },
+    ],
+  }]);
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /Never call an unfiltered comparison after a category-filtered request/);
+  const toolMessage = calls[1]?.find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()).periods, [
+    { label: "July", months: ["July"], total: 300 },
+    { label: "August", months: ["August"], total: 500 },
+  ]);
+});
+
+test("keeps each of the previous three months separate when comparing current outside-food spending", async () => {
+  const calls: BaseMessage[][] = [];
+  const comparisonInvocations: unknown[] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({
+          content: "",
+          tool_calls: [{
+            id: "outside-food-last-three-1",
+            name: "compareSpendingPeriods",
+            args: {
+              categories: ["Dining out", "Food order"],
+              periods: [
+                { label: "July", months: ["July"] },
+                { label: "August", months: ["August"] },
+                { label: "September", months: ["September"] },
+                { label: "October", months: ["October"] },
+              ],
+            },
+          }],
+        });
+      }
+      return new AIMessage("You spent ₹327 in October; July, August, and September are reported separately.");
+    },
+  }, undefined, {
+    now: () => new Date("2026-10-02T12:00:00.000Z"),
+  }, expenseCategoryVocabulary, undefined, {
+    name: "compareSpendingPeriods",
+    async invoke(input: unknown) {
+      comparisonInvocations.push(input);
+      return {
+        categories: ["Dining out", "Food order"],
+        total: 19331.49,
+        periods: [
+          { label: "July", months: ["July"], total: 6000 },
+          { label: "August", months: ["August"], total: 7004.49 },
+          { label: "September", months: ["September"], total: 6000 },
+          { label: "October", months: ["October"], total: 327 },
+        ],
+        comparisons: [],
+      };
+    },
+  } as unknown as StructuredToolInterface);
+
+  await agent.respond("How much I spent in outside food this month compared to last 3 months?");
+
+  assert.deepEqual(comparisonInvocations, [{
+    categories: ["Dining out", "Food order"],
+    periods: [
+      { label: "July", months: ["July"] },
+      { label: "August", months: ["August"] },
+      { label: "September", months: ["September"] },
+      { label: "October", months: ["October"] },
+    ],
+  }]);
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /do \*\*not\*\* create one\nperiod that bundles those N earlier months/i);
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /July, August, September, and October as four separate\nperiods/i);
+});
+
+test("logs the real LLM and getExpenses tool lifecycle using summaries", async () => {
+  const logger = new RecordedLogger();
+  let invocation = 0;
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(): Promise<AIMessage> {
+      invocation += 1;
+      return invocation === 1
+        ? new AIMessage({ content: "", tool_calls: [{ id: "expenses-1", name: "getExpenses", args: { month: "April", category: "Food" } }] })
+        : new AIMessage("You spent 450 on food.");
+    },
+  }, createGetExpensesTool({
+    monthTabs: ["April"],
+    async listExpenses() {
+      return [{ date: "2026-04-01", category: "Food", description: "Groceries", amount: 450, sourceSheet: "April", sourceRow: 9 }];
+    },
+  }), undefined, legacyCategoryVocabulary, logger);
+
+  await agent.respond("How much did I spend on food?", "query-test-id");
+
+  assert.equal(logger.entries.length, 16);
+  assert.match(logger.entries[0] ?? "", /^Agent:Execution started:.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[3] ?? "", /^LLM:Request prepared:.*"messageCount":2.*"availableTools".*"queryId":"query-test-id"/);
+  assert.match(logger.entries[4] ?? "", /^LLM:Invoking model:.*"attempt":1.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[5] ?? "", /^LLM:Model invocation completed:.*"durationMs":\d+.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[6] ?? "", /^LLM:Model response received:.*"toolCallCount":1.*getExpenses.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[7] ?? "", /^Tool:Tool call requested:.*"getExpenses".*"queryId":"query-test-id"/);
+  assert.match(logger.entries[8] ?? "", /^Tool:Tool execution started:.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[9] ?? "", /^Tool:Tool execution completed:.*"expenseCount":1.*"total":"₹450".*"durationMs":\d+.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[10] ?? "", /^LLM:Request prepared:.*"messageCount":4.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[13] ?? "", /^LLM:Model response received:.*"toolCallCount":0.*"queryId":"query-test-id"/);
+  assert.match(logger.entries[15] ?? "", /^Agent:Execution completed:.*"queryId":"query-test-id"/);
+  assert.doesNotMatch(logger.entries.join("\n"), /Groceries|You spent 450 on food/);
+});
+
+test("supplies authoritative current and previous workbook month context to the model", async () => {
+  const calls: BaseMessage[][] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      return new AIMessage("No expense data is needed.");
+    },
+  }, undefined, {
+    now: () => new Date("2027-01-15T12:00:00.000Z"),
+  }, expenseCategoryVocabulary);
+
+  await agent.respond("How much did I spend this month?");
+
+  const systemMessage = calls[0]?.[0];
+  assert.ok(systemMessage);
+  const content = systemMessage.content.toString();
+  assert.match(content, /Current local date: January 15, 2027/);
+  assert.match(content, /Current workbook month tab: January/);
+  assert.match(content, /Previous workbook month tab: December/);
+  assert.match(content, /Interpret "this month" as the current workbook month tab above/);
+  assert.match(content, /Available expense categories in the workbook:/);
+  assert.match(content, /- Dining out/);
+  assert.match(content, /do not include loosely associated categories/);
+  assert.match(content, /Cash is a payment-method\/account filter/);
+  assert.match(content, /Pratheek Cash and Arya Cash/);
+});
+
+test("canonicalizes semantic multi-category selections and never invokes an unknown category", async () => {
+  const calls: BaseMessage[][] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({
+          content: "",
+          tool_calls: [{
+            id: "food-1",
+            name: "getExpenses",
+            args: { month: "September", categories: ["Food order", "Dining out", "Food"] },
+          }],
+        });
+      }
+      return new AIMessage("You spent 750 on food.");
+    },
+  }, createGetExpensesTool({
+    monthTabs: ["September"],
+    async listExpenses() {
+      return [
+        { date: "2026-09-01", category: "Food order", description: "Delivery", amount: 450, sourceSheet: "September", sourceRow: 9 },
+        { date: "2026-09-02", category: "Dining out", description: "Lunch", amount: 300, sourceSheet: "September", sourceRow: 10 },
+        { date: "2026-09-03", category: "Travel", description: "Taxi", amount: 200, sourceSheet: "September", sourceRow: 11 },
+      ];
+    },
+  }), {
+    now: () => new Date("2026-09-16T12:00:00.000Z"),
+  }, expenseCategoryVocabulary);
+
+  assert.deepEqual(await agent.respond("How much did I spend on food this month?"), {
+    text: "You spent 750 on food.",
+  });
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /Current workbook month tab: September/);
+  const toolMessage = calls[1].find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()), {
+    expenses: [
+      { date: "2026-09-01", category: "Food order", description: "Delivery", amount: 450 },
+      { date: "2026-09-02", category: "Dining out", description: "Lunch", amount: 300 },
+    ],
+    total: 750,
+  });
+});
+
+test("canonicalizes an exact Dining out selection to the literal workbook label", async () => {
+  const invocations: unknown[] = [];
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      if (messages.some((message) => message instanceof ToolMessage)) {
+        return new AIMessage("You spent 300 on Dining out.");
+      }
+      return new AIMessage({
+        content: "",
+        tool_calls: [{ id: "dining-1", name: "getExpenses", args: { category: " dining OUT " } }],
+      });
+    },
+  }, {
+    name: "getExpenses",
+    async invoke(input: unknown) {
+      invocations.push(input);
+      return { expenses: [], total: 300 };
+    },
+  } as unknown as StructuredToolInterface, undefined, expenseCategoryVocabulary);
+
+  await agent.respond("How much did I spend on Dining out?");
+  assert.deepEqual(invocations, [{ categories: ["Dining out"] }]);
+});
+
+test("does not execute a tool call when every requested category is unknown", async () => {
+  let toolInvoked = false;
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      if (messages.some((message) => message instanceof ToolMessage)) {
+        return new AIMessage("Food is not an available workbook category.");
+      }
+      return new AIMessage({
+        content: "",
+        tool_calls: [{ id: "unknown-1", name: "getExpenses", args: { categories: ["Food"] } }],
+      });
+    },
+  }, {
+    name: "getExpenses",
+    async invoke() {
+      toolInvoked = true;
+      return {};
+    },
+  } as unknown as StructuredToolInterface, undefined, expenseCategoryVocabulary);
+
+  await agent.respond("How much did I spend on food?");
+  assert.equal(toolInvoked, false);
+});
+
+test("uses analyzeExpenses for groceries by weekday instead of exposing transactions to the model", async () => {
+  const calls: BaseMessage[][] = [];
+  let rawExpenseToolCalled = false;
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({ content: "", tool_calls: [{
+          id: "weekday-groceries-1", name: "analyzeExpenses", args: {
+            filter: { months: ["August"], categories: [" groceries "] }, groupBy: "dayOfWeek",
+            aggregation: "sum", sort: { field: "total", direction: "desc" },
+          },
+        }] });
+      }
+      return new AIMessage("You usually bought groceries on Saturday (₹700), then Sunday (₹300)." );
+    },
+  }, {
+    name: "getExpenses",
+    async invoke() { rawExpenseToolCalled = true; return {}; },
+  } as unknown as StructuredToolInterface, undefined, expenseCategoryVocabulary, undefined, undefined, createAnalyzeExpensesTool({
+    monthTabs: ["August"],
+    async listExpenses() {
+      return [
+        { date: "2026-08-01", category: "Groceries", description: "Market", amount: 500, sourceSheet: "August", sourceRow: 9 },
+        { date: "2026-08-02", category: "Groceries", description: "Market", amount: 300, sourceSheet: "August", sourceRow: 10 },
+        { date: "2026-08-08", category: "Groceries", description: "Market", amount: 200, sourceSheet: "August", sourceRow: 11 },
+      ];
+    },
+  }));
+
+  assert.deepEqual(await agent.respond("Which all day of the week I usually buy groceries in August month and how much each day sorting from highest to lowest"), {
+    text: "You usually bought groceries on Saturday (₹700), then Sunday (₹300).",
+  });
+  assert.equal(rawExpenseToolCalled, false);
+  const toolMessage = calls[1]?.find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()), {
+    filter: { months: ["August"], categories: ["Groceries"] }, groupBy: "dayOfWeek", aggregation: "sum",
+    results: [{ key: "Saturday", total: 700 }, { key: "Sunday", total: 300 }], matchingExpenseCount: 3,
+  });
+});
+
+test("uses deterministic exact-description item analysis without logging the description", async () => {
+  const calls: BaseMessage[][] = [];
+  const logger = new RecordedLogger();
+  const agent = new FinanceAgent({
+    async sendMessagesWithTools(messages): Promise<AIMessage> {
+      calls.push(messages);
+      if (calls.length === 1) {
+        return new AIMessage({ content: "", tool_calls: [{
+          id: "item-frequency-1", name: "analyzeExpenses", args: {
+            filter: { months: ["August"], descriptions: ["Masala dosa"] },
+            groupBy: "description", aggregation: "count", sort: { field: "count", direction: "desc" },
+          },
+        }] });
+      }
+      return new AIMessage("The selected item appeared twice in August.");
+    },
+  }, undefined, undefined, expenseCategoryVocabulary, logger, undefined, createAnalyzeExpensesTool({
+    monthTabs: ["August"],
+    async listExpenses() {
+      return [
+        { date: "2026-08-01", category: "Food order", description: "Masala dosa", amount: 120, sourceSheet: "August", sourceRow: 9 },
+        { date: "2026-08-02", category: "Food order", description: "Masala dosa", amount: 140, sourceSheet: "August", sourceRow: 10 },
+      ];
+    },
+  }));
+
+  assert.deepEqual(await agent.respond("Analyse the selected item in August."), {
+    text: "The selected item appeared twice in August.",
+  });
+  assert.match(calls[0]?.[0]?.content.toString() ?? "", /groupBy month, dayOfWeek, category, account, or description/);
+  const toolMessage = calls[1]?.find((message) => message instanceof ToolMessage);
+  assert.ok(toolMessage);
+  assert.deepEqual(JSON.parse(toolMessage.content.toString()), {
+    filter: { months: ["August"], descriptions: ["Masala dosa"] }, groupBy: "description",
+    aggregation: "count", results: [{ key: "Masala dosa", count: 2 }], matchingExpenseCount: 2,
+  });
+  assert.doesNotMatch(logger.entries.join("\n"), /Masala dosa/);
+});
+
+test("maps distinct ranked-analysis phrasings to the same composable analysis tool", async () => {
+  const specifications: unknown[] = [];
+  for (const request of ["Which weekdays do I spend the most on groceries?", "What are my top five categories in August?"]) {
+    const agent = new FinanceAgent({
+      async sendMessagesWithTools(messages): Promise<AIMessage> {
+        if (messages.some((message) => message instanceof ToolMessage)) return new AIMessage("Formatted deterministic analysis.");
+        const groceries = request.startsWith("Which weekdays");
+        return new AIMessage({ content: "", tool_calls: [{ id: request, name: "analyzeExpenses", args: groceries
+          ? { filter: { categories: ["Groceries"] }, groupBy: "dayOfWeek", aggregation: "sum", sort: { field: "total", direction: "desc" } }
+          : { filter: { months: ["August"] }, groupBy: "category", aggregation: "sum", sort: { field: "total", direction: "desc" }, limit: 5 },
+        }] });
+      },
+    }, undefined, undefined, expenseCategoryVocabulary, undefined, undefined, {
+      name: "analyzeExpenses",
+      async invoke(input: unknown) { specifications.push(input); return { aggregation: "sum", results: [], matchingExpenseCount: 0 }; },
+    } as unknown as StructuredToolInterface);
+    await agent.respond(request);
+  }
+  assert.deepEqual(specifications, [
+    { filter: { categories: ["Groceries"] }, groupBy: "dayOfWeek", aggregation: "sum", sort: { field: "total", direction: "desc" } },
+    { filter: { months: ["August"] }, groupBy: "category", aggregation: "sum", sort: { field: "total", direction: "desc" }, limit: 5 },
+  ]);
+});

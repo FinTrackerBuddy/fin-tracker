@@ -1,0 +1,23 @@
+{
+  "name": "fin-tracker-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only deterministic finance MCP server.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test $(find dist -name '*.test.js' -print)",
+    "start": "npm run build && node --env-file-if-exists=.env dist/mcp/finance-mcp-server.js",
+    "google-auth": "npm run build && node dist/google-sheets/google-auth.js"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.11",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
