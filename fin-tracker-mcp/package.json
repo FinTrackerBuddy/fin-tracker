@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test $(find dist -name '*.test.js' -print)",
     "start": "npm run build && node --env-file-if-exists=.env dist/mcp/finance-mcp-server.js",
+    "start:http": "npm run build && node --env-file-if-exists=.env dist/mcp/streamable-http-server.js",
     "google-auth": "npm run build && node dist/google-sheets/google-auth.js"
   },
   "dependencies": {

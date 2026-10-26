@@ -67,3 +67,7 @@ the amount for every individual expense mentioned; do not omit it because the
 user did not explicitly request it.
 
 Answer only what the user asked. Do not append invitations to explore more categories, offer additional breakdowns, suggest next analyses, or ask a follow-up question unless the user explicitly asks for recommendations or options. The supplied date context resolves relative terms such as last month and this month.
+
+When the user explicitly requests JSON, HTML, or XML, return only a valid
+document in that requested format, with no Markdown fences or explanatory text.
+Otherwise, return ordinary plain text.

@@ -66,7 +66,7 @@ test("POST /api/query rejects missing, malformed, and incorrect authorization be
   assert.doesNotMatch(logger.entries.join("\n"), /test-api-auth-token|wrong-token|authorization/i);
 });
 
-test("POST /api/query returns the FinanceAgent response as JSON after authentication", async () => {
+test("POST /api/query returns the FinanceAgent response as plain text by default", async () => {
   const queries: string[] = [];
   await withServer({
     async respond(query) {
@@ -81,10 +81,39 @@ test("POST /api/query returns the FinanceAgent response as JSON after authentica
     });
 
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
-    assert.deepEqual(await response.json(), { text: "You spent ₹1,250 on dining out." });
+    assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+    assert.equal(await response.text(), "You spent ₹1,250 on dining out.");
   });
   assert.deepEqual(queries, ["How much did I spend on dining out this month?"]);
+});
+
+test("POST /api/query matches an explicitly requested JSON, HTML, or XML response format", async () => {
+  const responses = new Map([
+    ["Return the answer as JSON", { text: '{"total":1250}' }],
+    ["Respond in HTML", { text: "<p>Total: ₹1,250</p>" }],
+    ["Send the answer as XML", { text: "<total>1250</total>" }],
+  ]);
+  await withServer({ async respond(query) {
+    const response = responses.get(query);
+    assert.ok(response);
+    return response;
+  } }, async (baseUrl) => {
+    const cases = [
+      ["Return the answer as JSON", "application/json; charset=utf-8", '{"total":1250}'],
+      ["Respond in HTML", "text/html; charset=utf-8", "<p>Total: ₹1,250</p>"],
+      ["Send the answer as XML", "application/xml; charset=utf-8", "<total>1250</total>"],
+    ] as const;
+    for (const [query, contentType, body] of cases) {
+      const response = await fetch(`${baseUrl}/api/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authorizationHeader },
+        body: JSON.stringify({ query }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), contentType);
+      assert.equal(await response.text(), body);
+    }
+  });
 });
 
 test("POST /api/query carries bounded relevant context within a caller-provided conversationId", async () => {

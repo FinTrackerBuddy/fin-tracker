@@ -38,7 +38,8 @@ Whenever Codex implements a new feature, capability, architectural change, meani
 - **Phase 3A — Session-level conversation memory — COMPLETE**
 - **Phase 3B — Item-level expense analysis — COMPLETE**
 - **Phase 3C — Portable Finance MCP Server & Skill Packaging — COMPLETE**
-- **Phase 3D — Persistent semantic memory — FUTURE**
+- **Phase 3D — Shared Streamable HTTP Finance MCP Service — COMPLETE**
+- **Phase 3E — Persistent semantic memory — FUTURE**
 - **Phase 4 — Advanced Agent Architecture — FUTURE**
 
 Phase 3 has three distinct concerns that must remain separate:
@@ -49,7 +50,7 @@ Phase 3 has three distinct concerns that must remain separate:
 
 Transaction descriptions are financial data, not semantic user memories. Do not automatically embed or persist them in a vector store, or turn them into user facts/preferences. Do not implement any Phase 3 concern during Phase 2. Do not add embeddings, a vector database, RAG, PostgreSQL, LangGraph, specialized agents, or background/scheduled workflows unless the current task and project phase explicitly require them.
 
-Phase 3C makes deterministic finance capabilities portable across agent harnesses. `fin-tracker-mcp/` provides the read-only Finance MCP server and `fin-tracker-mcp/skills/finance-mcp/SKILL.md`; `fin-tracker-agent/` uses it through a stdio MCP client. Keep Google Sheets REST OAuth behind the MCP server; Google's preview Sheets MCP server is out of scope. Do not duplicate calculations, expose arbitrary Sheet-range access, or let an LLM calculate financial values from returned transactions.
+Phase 3C packages deterministic finance capabilities for local stdio MCP harnesses. Phase 3D makes the same bounded Finance MCP server available as a shared loopback Streamable HTTP service for the Fin Tracker agent and local external harnesses. `fin-tracker-mcp/` provides the read-only Finance MCP server and `fin-tracker-mcp/skills/finance-mcp/SKILL.md`; `fin-tracker-agent/` selects `stdio` or `streamable-http` through its MCP connection configuration. Keep Google Sheets REST OAuth behind the MCP server; Google's preview Sheets MCP server is out of scope. Do not duplicate calculations, expose arbitrary Sheet-range access, or let an LLM calculate financial values from returned transactions. Do not bind the HTTP service beyond loopback until a separately scoped authentication and deployment boundary is implemented.
 
 Reusable skills use the standard `skills/<skill-name>/SKILL.md` layout. The agent's runtime prompt skill is `fin-tracker-agent/skills/finance-agent/SKILL.md`; the MCP client skill is `fin-tracker-mcp/skills/finance-mcp/SKILL.md`.
 
@@ -65,7 +66,7 @@ Reusable skills use the standard `skills/<skill-name>/SKILL.md` layout. The agen
 
 ## Current implementation conventions
 
-- `fin-tracker-agent/src/main.ts` exposes only `POST /api/query`; successful responses stay `{ "text": "..." }` unless a change is explicitly requested.
+- `fin-tracker-agent/src/main.ts` exposes only `POST /api/query`. Successful responses return the FinanceAgent text directly as `text/plain` by default; an explicit JSON, HTML, or XML request selects the corresponding response media type.
 - `fin-tracker-agent/FinanceAgent` runs a bounded LangChain tool loop and currently registers:
   - `getExpenses` for transaction-level retrieval and category/month/date/payment-method filtering.
   - `compareSpendingPeriods` for deterministic ordered period totals, differences, and percentage changes.

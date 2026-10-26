@@ -73,7 +73,7 @@ When starting a new Codex session, it should read both `PROJECT_SPEC.md` and `PR
 
 ## Phase 1 — Foundation + Basic Expense Agent — Complete
 
-Completed capabilities include the Node.js + TypeScript foundation; LangChain and provider abstraction; OpenAI and Gemini providers; FinanceAgent; read-only Google Sheets OAuth integration; deterministic `getExpenses`; tool calling; Asia/Kolkata relative-date context; semantic category selection and validation; the `src/main.ts` JSON HTTP API; and server-side correlation-ID and timing logs.
+Completed capabilities include the Node.js + TypeScript foundation; LangChain and provider abstraction; OpenAI and Gemini providers; FinanceAgent; read-only Google Sheets OAuth integration; deterministic `getExpenses`; tool calling; Asia/Kolkata relative-date context; semantic category selection and validation; the `src/main.ts` HTTP query API; and server-side correlation-ID and timing logs. Successful query responses are plain text by default, with an explicit user request selecting JSON, HTML, or XML output and media type.
 
 ## Phase 2 — Deterministic Financial Analysis — Complete
 
@@ -107,7 +107,11 @@ The `fin-tracker-mcp/` component owns the Finance MCP server, its deterministic 
 
 The custom agent remains provider-neutral and uses the Finance MCP server as an MCP client for normal runtime finance requests; it must not bypass that boundary with direct Sheets access. The same server and skill must be usable by supported external harnesses after their local MCP connection and skill-discovery configuration. The skill explains when to call each tool and never replaces the MCP tool schemas, server-side validation, or deterministic calculation implementation.
 
-### Phase 3D — Persistent semantic user memory — Future
+### Phase 3D — Shared Streamable HTTP Finance MCP Service — Complete
+
+Run the existing bounded, read-only Finance MCP capabilities as a separately started Streamable HTTP service so the Fin Tracker agent and local external harnesses can connect to the same process. The service remains loopback-only until a separately scoped authentication, TLS, and deployment boundary is implemented. Stdio remains supported for isolated local harness integration. This transport change must not duplicate deterministic calculations or expose Google Sheets credentials, arbitrary ranges, write operations, or raw financial data beyond the existing typed tool contracts.
+
+### Phase 3E — Persistent semantic user memory — Future
 
 Across sessions, retain intentionally created or updated user-specific facts, preferences, and context. The planned flow is: user information/fact → memory representation → embedding → vector database/vector store → semantic retrieval using the current query → relevant memories supplied to the agent/LLM → LLM relevance assessment. Planned work includes the memory creation/update model, embeddings, vector storage and semantic search, relevant-memory injection into agent reasoning, and memory lifecycle/cleanup.
 

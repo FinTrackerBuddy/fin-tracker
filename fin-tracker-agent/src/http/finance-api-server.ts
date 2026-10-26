@@ -79,7 +79,7 @@ export function createFinanceApiServer(
       if (conversationId !== undefined) {
         conversationMemory.remember(conversationId, { query, response: result.text });
       }
-      sendJson(response, 200, result);
+      sendText(response, 200, result.text, responseContentTypeForQuery(query));
       requestLogger.info("HTTP", "Request completed", {
         status: 200,
         responseCharacters: result.text.length,
@@ -161,6 +161,27 @@ function getConversationId(body: unknown): string | undefined | null {
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+function sendText(response: ServerResponse, statusCode: number, body: string, contentType: string): void {
+  response.writeHead(statusCode, { "content-type": `${contentType}; charset=utf-8` });
+  response.end(body);
+}
+
+/**
+ * The query itself is the explicit response-format contract. `Accept` is not
+ * used because callers may request a presentation format independent of their
+ * own preferred representation. Everything else is returned as plain text.
+ */
+function responseContentTypeForQuery(query: string): string {
+  const formatMatch = query.match(/\b(?:as|in)\s+(?:a\s+|an\s+|valid\s+)?(json|html|xml)\b|\b(?:return|respond(?:ing)?|send(?:ing)?|output(?:ting)?|format(?:ted)?)(?:\s+\w+){0,5}?\s+(?:as|in)?\s*(?:a\s+|an\s+|valid\s+)?(json|html|xml)\b/i);
+  const requestedFormat = (formatMatch?.[1] ?? formatMatch?.[2])?.toLowerCase();
+  switch (requestedFormat) {
+    case "json": return "application/json";
+    case "html": return "text/html";
+    case "xml": return "application/xml";
+    default: return "text/plain";
+  }
 }
 
 class InvalidRequestBodyError extends Error {}

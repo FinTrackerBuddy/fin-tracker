@@ -13,7 +13,7 @@ memory, or conversational policy.
 ```text
 MCP client (Fin Tracker agent or external harness)
                     |
-              stdio MCP transport
+      stdio or Streamable HTTP MCP transport
                     |
              Finance MCP server
                     |
@@ -51,11 +51,14 @@ Google Sheets directly.
 
 ## Client integration
 
-The Fin Tracker agent connects through stdio and maps its existing internal
-LangChain tool names to the MCP operation names. External clients configure
-the server independently and use `skills/finance-mcp/SKILL.md` for tool
-selection and presentation guidance. The skill does not replace schemas,
-server-side validation, or deterministic implementation.
+The Fin Tracker agent maps its existing internal LangChain tool names to the
+MCP operation names. It can use stdio for an isolated child process or
+Streamable HTTP for a separately started shared local service. The HTTP server
+binds only to loopback until authentication and deployment hardening are
+explicitly scoped. External clients configure either supported transport and
+use `skills/finance-mcp/SKILL.md` for tool selection and presentation guidance.
+The skill does not replace schemas, server-side validation, or deterministic
+implementation.
 
 ## Configuration and verification
 
