@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fin-tracker-finance",
+  "version": "0.1.0",
+  "description": "Local read-only finance analysis skill and Streamable HTTP MCP connection for Fin Tracker."
+}

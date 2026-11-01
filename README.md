@@ -36,7 +36,7 @@ Client
   │ POST /api/query
   ▼
 Finance Agent (LangChain, provider-neutral)
-  │ stdio MCP
+  │ stdio or Streamable HTTP MCP
   ▼
 Finance MCP Server
   │ read-only OAuth
@@ -114,11 +114,9 @@ curl --request POST http://localhost:3001/api/query \
   --data '{"query":"How much did I spend on dining out this month?"}'
 ```
 
-Successful responses have the shape:
-
-```json
-{ "text": "..." }
-```
+Successful responses are direct `text/plain` output by default. A query that
+explicitly asks for JSON, HTML, or XML receives the corresponding media type
+and valid unwrapped model output. Errors remain JSON.
 
 To retain bounded context for follow-up questions in the same running process,
 reuse a valid client-generated `conversationId`:
@@ -133,19 +131,22 @@ reuse a valid client-generated `conversationId`:
 Conversation memory is process-local, excludes tool results and raw financial
 rows, and is not persistent semantic memory.
 
-## Run the MCP server directly
+## Connect an external MCP client
 
-This is useful when connecting an external MCP-capable client:
+After the Finance MCP OAuth setup, start the shared local service:
 
 ```sh
 cd fin-tracker-mcp
-npm start
+npm run start:http
 ```
 
-It communicates over standard input/output; diagnostics are written to standard
-error. See [the MCP component README](fin-tracker-mcp/README.md) and
-`fin-tracker-mcp/skills/finance-mcp/SKILL.md` for connection and tool-use
-guidance.
+It listens at `http://127.0.0.1:3002/mcp`. A local Codex or Claude Code
+process can then connect with the commands documented in [the MCP component
+README](fin-tracker-mcp/README.md). The endpoint is loopback-only and cannot
+be used by a cloud harness or another computer. The same component includes a
+portable plugin manifest and the `finance-mcp` skill for Codex; Claude Code
+requires its normal local skill/project-instruction discovery in addition to
+the MCP connection.
 
 ## Verification
 
@@ -179,6 +180,6 @@ fake/in-memory sources and do not require live Sheets or LLM access.
 - [WORKBOOK_DATA_MAP.md](WORKBOOK_DATA_MAP.md) — observed source-workbook schema and limitations.
 - [AGENTS.md](AGENTS.md) — repository conventions for contributors and agents.
 
-Phase 3C (portable Finance MCP server and skill packaging) is complete. Phase
-3D persistent semantic memory and Phase 4 advanced architecture remain future
-work.
+Phase 3C (portable Finance MCP server and skill packaging) and Phase 3D
+(shared local Streamable HTTP MCP service) are complete. Phase 3E persistent
+semantic memory and the planned Phase 4–6 expansion remain future work.

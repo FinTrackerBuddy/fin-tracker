@@ -2,10 +2,29 @@
 
 ## Current phase
 
-Phase 3D — Shared Streamable HTTP Finance MCP Service (COMPLETE; Phase 3E persistent semantic memory remains future work)
+Phase 3D — Shared Streamable HTTP Finance MCP Service (COMPLETE; Phase 3E persistent semantic memory and Phase 4–6 expansion remain future work)
 
 ## Completed work
 
+- Packaged the local Finance MCP integration for external local harnesses:
+  `fin-tracker-mcp/plugin.json` and `mcp.json` describe the bundled
+  `finance-mcp` skill and loopback Streamable HTTP connection for Codex-style
+  plugin discovery. The MCP README now provides copy-paste Codex and Claude
+  Code HTTP connection commands, corrects the stdio working-directory example,
+  and documents the local-only boundary. The portable `finance-mcp` skill now
+  mirrors the FinanceAgent's deterministic tool-selection and presentation
+  rules using MCP operation names, with resource-based category selection,
+  Asia/Kolkata relative-date handling, and explicit read-only fallback. This
+  changes discoverability and guidance only; the server remains read-only,
+  loopback-only, and does not package or expose credentials.
+- Updated the future roadmap: Phase 4 is a planned PostgreSQL data platform,
+  configurable Sheets/database sources, controlled write operations, and
+  mapped debt/electronics/household data; Phase 5 covers broader investment
+  sources, source-specific skills, NAV updates, and mutual-fund unit updates;
+  Phase 6 covers deterministic wealth and retirement decision support. RAG is
+  limited to appropriate curated context or unstructured material and is not
+  a substitute for deterministic financial calculations or a transaction
+  embedding pipeline.
 - `POST /api/query` now returns the FinanceAgent's complete response text directly instead of a `{ "text": "..." }` JSON envelope. Successful default responses use `text/plain`; an explicit request for JSON, HTML, or XML selects `application/json`, `text/html`, or `application/xml` respectively. Error responses remain JSON so callers retain stable machine-readable failure details. The FinanceAgent skill now requires valid, fence-free output when one of those formats is requested.
 - Completed Phase 3D shared local MCP service: `fin-tracker-mcp` now exposes the existing bounded read-only tools and category resource through a loopback-only Streamable HTTP endpoint at `/mcp` (default `http://127.0.0.1:3002/mcp`), while preserving stdio for isolated harnesses. `fin-tracker-agent` can select `FINANCE_MCP_TRANSPORT=streamable-http` and `FINANCE_MCP_URL` to connect to that separately started process rather than spawn one. The HTTP implementation is stateless and creates a fresh MCP server/transport per request, allowing independent local clients without shared conversational or financial state. It must remain loopback-only until a separately scoped authentication/TLS/deployment boundary is introduced.
 - Renumbered the roadmap at the user's direction: shared Streamable HTTP MCP deployment is Phase 3D and persistent semantic user memory is now Phase 3E. No memory, embeddings, vector database, PostgreSQL, or LangGraph work was introduced.

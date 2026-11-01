@@ -148,11 +148,81 @@ Persistent memory must not automatically store every conversation message. The d
 
 Persistent semantic memory remains a separate subsystem that may supply relevant intentionally maintained user context to the agent. Neither session memory, item-level analysis, nor persistent semantic memory—including embeddings and a vector database—may be introduced during Phase 2 financial-analysis work.
 
-## Phase 4 — Advanced Agent Architecture — Future
+## Phase 4 — Financial Data Platform & Controlled Writes — Future
 
-Potential work includes LangGraph only where genuinely useful, more complex multi-step workflows, multiple specialized agents where justified, PostgreSQL as a broader persistent application database, additional financial data sources, and scheduled/background workflows.
+Phase 4 moves the bounded finance domain from a Sheets-only read model toward
+a deliberate data platform. It does **not** change the currently deployed
+read-only behavior until each write path has been designed, authorized, and
+tested.
 
-These are future capabilities; they are not prerequisites for the initial Phase 2 tools.
+Planned work:
+
+- Design the PostgreSQL migration before copying data: define canonical
+  transaction, account, category, source-provenance, import-run, and
+  reconciliation schemas; stable IDs; fiscal/calendar dates; constraints;
+  indexes; migration/backfill and rollback strategy; and a clear ownership
+  rule for Sheets versus the database.
+- Refactor the Finance MCP server behind source interfaces so approved tools
+  can read from Google Sheets, PostgreSQL, or a configured reconciliation
+  strategy without duplicating calculation rules or silently mixing sources.
+- Add narrowly scoped, validated write operations for approved Sheets and/or
+  PostgreSQL records. Writes must use typed contracts, explicit confirmation
+  and authorization at the harness boundary, idempotency/audit metadata,
+  source-of-truth and conflict rules, and deterministic tests. Only then may
+  the agent receive skill guidance to select those write tools.
+- Extend the mapped workbook boundary to `Debts & Reimbursals`, `Electronic
+  Items bought`, and `Household Items bought`. Each tab needs a dedicated
+  schema, authority/reconciliation rule, read contract, and privacy-safe
+  response policy; the purchase registers must not be double-counted with the
+  monthly ledger.
+- Introduce retrieval augmentation only where it is demonstrably useful for
+  intentionally curated user context or unstructured supporting material.
+  Deterministic financial records, totals, validation, and calculations remain
+  in TypeScript/SQL; transactions must not be indiscriminately embedded or
+  treated as semantic memory.
+
+LangGraph, specialized agents, and background workflows remain optional Phase
+4 design choices, adopted only when a concrete workflow needs them.
+
+## Phase 5 — Broader Financial Sources & Investment Operations — Future
+
+Phase 5 expands beyond the current Expenses workbook after each source is
+mapped and its data authority is established:
+
+- `Savings Accounts`: account balances and cash positions; preserve account
+  identifiers as sensitive metadata and reconcile balances to transaction
+  activity.
+- `Credit summary`: credit/income category summaries; introduce only with a
+  clear income/credit data contract rather than inferring it from debit tools.
+- `Util sheet`: controlled account and category vocabulary; model it as
+  taxonomy/configuration, not financial transactions.
+- Separate, verified investment sheets when supplied: mutual-fund holdings and
+  NAV history, PPF, EPF, fixed deposits, NPS, equities/ETFs, bonds/government
+  securities, recurring deposits, insurance-linked investments, gold/SGBs,
+  REITs/InvITs, cryptocurrency/digital assets where applicable, and other
+  user-declared assets or liabilities. No source is assumed present until it
+  is inspected and added to `WORKBOOK_DATA_MAP.md`.
+- Create source-specific skills for safely reading, validating, reconciling,
+  and explaining each supported sheet or investment source.
+- Add a scheduled NAV-update workflow only after choosing its data provider,
+  market-calendar/holiday policy, retry and staleness behavior, rate limits,
+  provenance, and an authorized destination. The workflow must not overwrite
+  user-entered valuations without a defined reconciliation rule.
+- Add a controlled mutual-fund unit-update workflow: the agent may interpret a
+  user request, but a deterministic tool must validate fund identity, trade
+  date, units, price/NAV, source, idempotency, and resulting holdings before
+  a confirmed write.
+
+## Phase 6 — Wealth, Retirement & Decision Support — Future
+
+Build skills and deterministic models that combine verified sources to answer
+whole-of-finance questions: current net worth, asset/liability allocation,
+cash-flow, goal funding, emergency reserves, and retirement projections.
+Retirement analysis must state its assumptions—time horizon, contributions,
+inflation, returns, taxes, withdrawals, and uncertainty—and present scenarios
+rather than claiming a guaranteed outcome. The LLM selects tools and explains
+results; calculations and projections remain reproducible code/SQL with
+traceable input provenance.
 
 # 5. Google Sheets Access
 
